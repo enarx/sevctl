@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use colorful::*;
 use std::arch::x86_64;
 use std::mem::transmute;
 use std::str::from_utf8;
@@ -19,6 +20,19 @@ struct CpuId {
     pub leaf: u32,
     pub func: fn(x86_64::CpuidResult) -> (bool, Option<String>),
     pub level: u32,
+}
+
+impl CpuId {
+    pub fn execute(&self) -> (bool, String) {
+        let (success, msg) = (self.func)(unsafe { x86_64::__cpuid(self.leaf) });
+
+        let msg = match msg {
+            Some(m) => format!("{}: {}", self.name, m),
+            None => self.name.to_string(),
+        };
+
+        (success, msg)
+    }
 }
 
 const CORE_CPUID: &[CpuId] = &[CpuId {
@@ -121,6 +135,33 @@ const SEV_ES_CPUIDS: &[CpuId] = &[CpuId {
 pub fn cmd(gen: Option<SevGeneration>, quiet: bool) -> Result<()> {
     let mut passed = true;
 
+    // Collect all tests.
+    let cpuid_vec = match gen {
+        Some(g) => collect_cpuids(g),
+        None => collect_cpuids(SevGeneration::Es),
+    };
+
+    // Iterate through and test CPUIDs.
+    for list in cpuid_vec {
+        if passed {
+            for cpuid in list {
+                let (success, msg) = cpuid.execute();
+                if !success {
+                    passed = false;
+                }
+                if !quiet {
+                    emit_result(success, &msg, cpuid.level);
+                } 
+            }
+        } else {
+            for cpuid in list {
+                if !quiet {
+                    emit_skip(cpuid.name, cpuid.level);
+                }
+            }
+        }
+    }
+
     if passed {
         Ok(())
     } else {
@@ -129,4 +170,48 @@ pub fn cmd(gen: Option<SevGeneration>, quiet: bool) -> Result<()> {
             Box::<Error>::new(ErrorKind::InvalidData.into()),
         ))
     }
+}
+
+fn emit_result(success: bool, msg: &str, level: u32) {
+    let res_v = if success {
+        format!("[ {} ]", "OK".green())
+    } else {
+        format!("[ {} ]", "FAIL".red())
+    };
+
+    let align_level = get_align_level(level);
+
+    println!("{}", format!("{}{}{}", res_v, align_level, msg))
+}
+
+fn emit_skip(msg: &str, level: u32) {
+    let res_v = format!("[ {} ]", "SKIP".yellow());
+
+    let align_level = get_align_level(level);
+
+    println!("{}", format!("{}{}{}", res_v, align_level, msg))
+}
+
+fn get_align_level(level: u32) -> &'static str {
+    match level {
+        1 => " ",
+        2 => " - ",
+        3 => "   - ",
+        4 => "     - ",
+        _ => "       - ",
+    } 
+}
+
+fn collect_cpuids(gen: SevGeneration) -> Vec<&'static [CpuId]> {
+    let mut c_vec = vec![
+        CORE_CPUID,
+        AMD_CPU_DEPENDENT_CPUIDS,
+        MICROCODE_DEPENDENT_CPUIDS,
+        SEV_SME_DEPENDENT_CPUIDS,
+    ];
+    if let SevGeneration::Es = gen {
+        c_vec.push(SEV_ES_CPUIDS);
+    }
+
+    c_vec
 }
