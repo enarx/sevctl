@@ -3,6 +3,7 @@
 use super::*;
 use colorful::*;
 use std::arch::x86_64;
+use std::fs;
 use std::mem::transmute;
 use std::str::from_utf8;
 
@@ -14,6 +15,10 @@ pub enum SevGeneration {
     #[structopt(about = "SEV + Encrypted State")]
     Es,
 }
+
+const SYS_TEST_LEVEL: u32 = 5;
+
+type SystemTest = (Box<dyn Fn() -> (bool, String)>, String);
 
 struct CpuId {
     pub name: &'static str,
@@ -140,6 +145,10 @@ pub fn cmd(gen: Option<SevGeneration>, quiet: bool) -> Result<()> {
         Some(g) => collect_cpuids(g),
         None => collect_cpuids(SevGeneration::Es),
     };
+    let sys_tests: Vec<SystemTest> = vec![
+        (Box::new(dev_sev_r), "/dev/sev readable".to_string()),
+        (Box::new(dev_sev_w), "/dev/sev writable".to_string()),
+    ];
 
     // Iterate through and test CPUIDs.
     for list in cpuid_vec {
@@ -151,13 +160,32 @@ pub fn cmd(gen: Option<SevGeneration>, quiet: bool) -> Result<()> {
                 }
                 if !quiet {
                     emit_result(success, &msg, cpuid.level);
-                } 
+                }
             }
         } else {
             for cpuid in list {
                 if !quiet {
                     emit_skip(cpuid.name, cpuid.level);
                 }
+            }
+        }
+    }
+
+    // Complete the rest of the system tests
+    if passed {
+        for (func, _func_name) in sys_tests {
+            let (success, msg) = func();
+            if !quiet {
+                emit_result(success, &msg, SYS_TEST_LEVEL);
+            }
+            if !success {
+                passed = false;
+            }
+        }
+    } else {
+        for (_func, func_name) in sys_tests {
+            if !quiet {
+                emit_skip(&func_name, SYS_TEST_LEVEL);
             }
         }
     }
@@ -199,7 +227,7 @@ fn get_align_level(level: u32) -> &'static str {
         3 => "   - ",
         4 => "     - ",
         _ => "       - ",
-    } 
+    }
 }
 
 fn collect_cpuids(gen: SevGeneration) -> Vec<&'static [CpuId]> {
@@ -214,4 +242,39 @@ fn collect_cpuids(gen: SevGeneration) -> Vec<&'static [CpuId]> {
     }
 
     c_vec
+}
+
+fn dev_sev_r() -> (bool, String) {
+    let (success, msg) = dev_sev_rw(fs::OpenOptions::new().read(true));
+
+    if success {
+        (success, "/dev/sev readable".to_string())
+    } else {
+        (success, format!("/dev/sev not readable: {}", msg))
+    }
+}
+
+fn dev_sev_w() -> (bool, String) {
+    let (success, msg) = dev_sev_rw(fs::OpenOptions::new().write(true));
+
+    if success {
+        (success, "/dev/sev writable".to_string())
+    } else {
+        (success, format!("/dev/sev not writable: {}", msg))
+    }
+}
+
+fn dev_sev_rw(file: &mut fs::OpenOptions) -> (bool, String) {
+    let path = "/dev/sev";
+    let mut success = true;
+
+    let msg = match file.open(path) {
+        Ok(_) => "Readable".to_string(),
+        Err(e) => {
+            success = false;
+            format!("Error ({})", e)
+        }
+    };
+
+    (success, msg)
 }
