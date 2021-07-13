@@ -5,6 +5,7 @@ use colorful::*;
 use std::arch::x86_64;
 use std::fs;
 use std::mem::transmute;
+use std::mem::MaybeUninit;
 use std::os::unix::io::AsRawFd;
 use std::str::from_utf8;
 
@@ -153,6 +154,10 @@ pub fn cmd(gen: Option<SevGeneration>, quiet: bool) -> Result<()> {
         (
             Box::new(sev_enabled_in_kvm),
             "SEV enablement in KVM".to_string(),
+        ),
+        (
+            Box::new(memlock_rlimit),
+            "Memlock resource limit".to_string(),
         ),
     ];
 
@@ -344,4 +349,22 @@ fn sev_enabled_in_kvm() -> (bool, String) {
     };
 
     (success, msg)
+}
+
+fn memlock_rlimit() -> (bool, String) {
+    let mut rlimit = MaybeUninit::uninit();
+    let res = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, rlimit.as_mut_ptr()) };
+
+    if res == 0 {
+        let r = unsafe { rlimit.assume_init() };
+
+        let r_msg = format!(
+            "memlock resource limits -- Soft: {} | Hard: {}",
+            r.rlim_cur, r.rlim_max
+        );
+
+        (true, r_msg)
+    } else {
+        (false, "Unable to get memlock resource limits".to_string())
+    }
 }
