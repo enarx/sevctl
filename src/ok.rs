@@ -5,6 +5,7 @@ use colorful::*;
 use std::arch::x86_64;
 use std::fs;
 use std::mem::transmute;
+use std::os::unix::io::AsRawFd;
 use std::str::from_utf8;
 
 #[derive(StructOpt)]
@@ -148,6 +149,11 @@ pub fn cmd(gen: Option<SevGeneration>, quiet: bool) -> Result<()> {
     let sys_tests: Vec<SystemTest> = vec![
         (Box::new(dev_sev_r), "/dev/sev readable".to_string()),
         (Box::new(dev_sev_w), "/dev/sev writable".to_string()),
+        (Box::new(has_kvm_support), "KVM support".to_string()),
+        (
+            Box::new(sev_enabled_in_kvm),
+            "SEV enablement in KVM".to_string(),
+        ),
     ];
 
     // Iterate through and test CPUIDs.
@@ -274,6 +280,67 @@ fn dev_sev_rw(file: &mut fs::OpenOptions) -> (bool, String) {
             success = false;
             format!("Error ({})", e)
         }
+    };
+
+    (success, msg)
+}
+
+fn has_kvm_support() -> (bool, String) {
+    let mut success = true;
+    let path = "/dev/kvm";
+
+    let msg = match File::open(path) {
+        Ok(kvm) => {
+            let api_version = unsafe { libc::ioctl(kvm.as_raw_fd(), 0xAE00, 0) };
+            if api_version < 0 {
+                success = false;
+                "KVM probing error: accessing KVM device node failed".to_string()
+            } else {
+                format!("KVM API version: {}", api_version)
+            }
+        }
+        Err(e) => {
+            success = false;
+            format!("KVM probing error while reading {}: ({})", path, e)
+        }
+    };
+
+    (success, msg)
+}
+
+fn sev_enabled_in_kvm() -> (bool, String) {
+    let mut success = true;
+    let path_loc = "/sys/module/kvm_amd/parameters/sev";
+    let path = std::path::Path::new(path_loc);
+
+    let msg = if path.exists() {
+        match std::fs::read_to_string(path_loc) {
+            Ok(result) => {
+                if result.trim() == "1" {
+                    "SEV enabled in KVM".to_string()
+                } else {
+                    success = false;
+                    format!(
+                        "Error checking if SEV is enabled in KVM (contents read from {}: {})",
+                        path_loc,
+                        result.trim()
+                    )
+                }
+            }
+            Err(e) => {
+                success = false;
+                format!(
+                    "Error checking if SEV is enabled in KVM (unable to read {}): {}",
+                    path_loc, e,
+                )
+            }
+        }
+    } else {
+        success = false;
+        format!(
+            "Error checking if SEV is enabled in KVM: {} does not exist",
+            path_loc
+        )
     };
 
     (success, msg)
